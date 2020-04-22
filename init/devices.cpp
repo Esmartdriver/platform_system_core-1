@@ -25,7 +25,9 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <sstream>
 #include <thread>
+#include <iomanip>
 
 #include <android-base/chrono_utils.h>
 #include <android-base/file.h>
@@ -56,6 +58,16 @@ using android::base::Trim;
 
 namespace android {
 namespace init {
+
+const int Aliases::ANY = -1;
+
+bool Aliases::Matches(int productId, int vendorId, int major, int minor) const {
+    return
+        ((this->minor_ == Aliases::ANY) || this->minor_ == minor) &&
+        ((this->major_ == Aliases::ANY) || this->major_ == major) &&
+        (this->productId_ == productId) &&
+        (this->vendorId_ == vendorId);
+}
 
 /* Given a path that may start with a PCI device, populate the supplied buffer
  * with the PCI domain/bus number and the peripheral ID and return 0.
@@ -134,6 +146,10 @@ static bool FindDmDevicePartition(const std::string& path, std::string* result) 
     // Return cached results, when node goes away
     *result = it->second;
     return true;
+}
+
+Aliases::Aliases(const std::string& to, int productId, int vendorId, int major, int minor)
+    : minor_(minor), major_(major), productId_(productId), vendorId_(vendorId), alias_to_(to) {
 }
 
 Permissions::Permissions(const std::string& name, mode_t perm, uid_t uid, gid_t gid)
@@ -383,11 +399,20 @@ std::vector<std::string> DeviceHandler::GetBlockDeviceSymlinks(const Uevent& uev
     return links;
 }
 
-void DeviceHandler::HandleDevice(const std::string& action, const std::string& devpath, bool block,
+void DeviceHandler::HandleDevice(const std::string& action, const std::string& devpath,
+                                 const std::string& upath, bool block,
                                  int major, int minor, const std::vector<std::string>& links) const {
+    std::vector<std::string> all_links(links);
+    std::string alias_link;
+
+    // Add the alias link to the device to the list of links to
+    // create.
+    if (GetDeviceAlias(upath, major, minor, alias_link))
+        all_links.push_back(alias_link);
+
     if (action == "add") {
-        MakeDevice(devpath, block, major, minor, links);
-        for (const auto& link : links) {
+        MakeDevice(devpath, block, major, minor, all_links);
+        for (const auto& link : all_links) {
             if (!mkdir_recursive(Dirname(link), 0755)) {
                 PLOG(ERROR) << "Failed to create directory " << Dirname(link);
             }
@@ -405,7 +430,7 @@ void DeviceHandler::HandleDevice(const std::string& action, const std::string& d
     }
 
     if (action == "remove") {
-        for (const auto& link : links) {
+        for (const auto& link : all_links) {
             std::string link_path;
             if (Readlink(link, &link_path) && link_path == devpath) {
                 unlink(link.c_str());
@@ -458,7 +483,111 @@ void DeviceHandler::HandleUevent(const Uevent& uevent) {
 
     mkdir_recursive(Dirname(devpath), 0755);
 
-    HandleDevice(uevent.action, devpath, block, uevent.major, uevent.minor, links);
+    HandleDevice(uevent.action, devpath, uevent.path, block, uevent.major, uevent.minor, links);
+}
+
+static bool FormatDeviceAlias(const Aliases& alias, int minor, std::string bInterfaceNumber_s,
+                              std::string& alias_link) {
+    std::string::size_type a = 0, b;
+    std::stringstream fmt;
+
+    while ((b = alias.AliasTo().find("%", a)) != std::string::npos) {
+        LOG(INFO) << "a: " << a << " b: " << b;
+        LOG(INFO) << "Appending " << alias.AliasTo().substr(a, b - a);
+        fmt << alias.AliasTo().substr(a, b - a);
+
+        if (alias.AliasTo()[b + 1] == 'i') {
+            // Remove newline at the end of bInterfaceNumber_s.
+            bInterfaceNumber_s.erase(bInterfaceNumber_s.find_last_not_of("\n") + 1);
+
+            if (bInterfaceNumber_s.empty()) {
+                PLOG(ERROR) << "No bInterfaceNumber for device, not creating symlink";
+                return false;
+            }
+            else fmt << bInterfaceNumber_s;
+        }
+        else if (alias.AliasTo()[b + 1] == 'm')
+            fmt << minor;
+        else {
+            LOG(ERROR) << "Unknown symlink mask format: %" << alias.AliasTo()[b + 1];
+            return false;
+        }
+
+        a = (b += 2);
+    }
+
+    if (fmt.str().empty())
+        alias_link = alias.AliasTo();
+    else
+        alias_link = fmt.str();
+
+    LOG(INFO) << "Returning " << fmt.str();
+
+    return true;
+}
+
+bool DeviceHandler::GetDeviceAlias(const std::string &upath, int major, int minor,
+                                   std::string& alias_link) const {
+    bool found = false;
+    std::string parent_dir;
+    std::string vendorId_s, vendorId_path;
+
+    parent_dir = Dirname("/sys" + upath);
+
+    // If we can't associate an idVendor for the device, then we
+    // silently quit this as we won't ever by able to create an
+    // alias..
+    while ((parent_dir != "/sys" && parent_dir != ".")) {
+        std::string vendorId_path = parent_dir + "/idVendor";
+
+        // Get the vendor ID
+        if (!android::base::ReadFileToString(vendorId_path, &vendorId_s)) {
+            // Can't find the vendor ID? move up the path.
+            auto last_slash = parent_dir.rfind('/');
+            if (last_slash == std::string::npos) break;
+
+            parent_dir.erase(last_slash);
+        }
+        // Found the idVendor, move to the next step.
+        else { found = true; break; }
+    }
+
+    if (!found) return false;
+
+    // Iterate through all the configured aliases.
+    for (const auto& alias : aliases_) {
+        std::string sys_path;
+        std::string productId_s, bInterfaceNumber_s, dev_s;
+        std::string productId_path, bInterfaceNumber_path;
+        std::string sAliasPath;
+        int vendorId, productId;
+
+        // Look in /sys for the information we need.
+        sys_path = "/sys" + upath;
+        productId_path = parent_dir + "/idProduct";
+        bInterfaceNumber_path = sys_path + "/device/bInterfaceNumber";
+
+        // Get the product ID or fail because we need that.
+        if (!android::base::ReadFileToString(productId_path, &productId_s)) {
+            PLOG(ERROR) << "Failed to read product ID " << productId_path;
+            continue;
+        }
+
+        // We only need the bInterfaceNumber if it's specified in the
+        // alias format string so that's why we ignore the possible
+        // error here.
+        android::base::ReadFileToString(bInterfaceNumber_path, &bInterfaceNumber_s);
+
+        vendorId = std::stoi(vendorId_s, 0, 16);
+        productId = std::stoi(productId_s, 0, 16);
+
+        // Check if the configured alias matches the device that we
+        // just detected.
+        if (alias.Matches(productId, vendorId, major, minor))
+            return FormatDeviceAlias(alias, minor, bInterfaceNumber_s, alias_link);
+    }
+
+    return false;
 }
 
 void DeviceHandler::ColdbootDone() {
@@ -467,18 +596,21 @@ void DeviceHandler::ColdbootDone() {
 
 DeviceHandler::DeviceHandler(std::vector<Permissions> dev_permissions,
                              std::vector<SysfsPermissions> sysfs_permissions,
-                             std::vector<Subsystem> subsystems, std::set<std::string> boot_devices,
+                             std::vector<Subsystem> subsystems,
+                             std::vector<Aliases> aliases,
+                             std::set<std::string> boot_devices,
                              bool skip_restorecon)
     : dev_permissions_(std::move(dev_permissions)),
       sysfs_permissions_(std::move(sysfs_permissions)),
       subsystems_(std::move(subsystems)),
+      aliases_(std::move(aliases)),
       boot_devices_(std::move(boot_devices)),
       skip_restorecon_(skip_restorecon),
       sysfs_mount_point_("/sys") {}
 
 DeviceHandler::DeviceHandler()
     : DeviceHandler(std::vector<Permissions>{}, std::vector<SysfsPermissions>{},
-                    std::vector<Subsystem>{}, std::set<std::string>{}, false) {}
+                    std::vector<Subsystem>{}, std::vector<Aliases>{}, std::set<std::string>{}, false) {}
 
 }  // namespace init
 }  // namespace android
