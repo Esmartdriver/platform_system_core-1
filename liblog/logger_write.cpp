@@ -461,8 +461,8 @@ int __android_log_buf_write(int bufID, int prio, const char* tag, const char* ms
       inform:
         bufID = LOG_ID_RADIO;
         // u-blox modifications
-        snprintf(tmp_tag, sizeof(tmp_tag), "use-Rlog/RLOG-%s", tag);
-        tag = tmp_tag;
+        //snprintf(tmp_tag, sizeof(tmp_tag), "use-Rlog/RLOG-%s", tag);
+        //tag = tmp_tag;
         // u-blox modifications end
         [[fallthrough]];
       default:
