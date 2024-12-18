@@ -444,6 +444,7 @@ int __android_log_buf_write(int bufID, int prio, const char* tag, const char* ms
       case 'C':
         if (strcmp(tag + 1, "CDMA" + 1)) break;
         goto inform;
+      // u-blox modifications
       case 'M':
         if (strcmp(tag + 1, "MUXD" + 1)) break;
         goto inform;
@@ -453,13 +454,16 @@ int __android_log_buf_write(int bufID, int prio, const char* tag, const char* ms
       case 'i':
         if (strncmp(tag + 1, "init.gprs" + 1, strlen("init.gprs") - 1)) break;
         goto inform;
+      // u-blox modifications end
       case 'P':
         if (strcmp(tag + 1, "PHONE" + 1)) break;
       /* FALLTHRU */
       inform:
         bufID = LOG_ID_RADIO;
-        snprintf(tmp_tag, sizeof(tmp_tag), "use-Rlog/RLOG-%s", tag);
-        tag = tmp_tag;
+        // u-blox modifications
+        //snprintf(tmp_tag, sizeof(tmp_tag), "use-Rlog/RLOG-%s", tag);
+        //tag = tmp_tag;
+        // u-blox modifications end
         [[fallthrough]];
       default:
         break;

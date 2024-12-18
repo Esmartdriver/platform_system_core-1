@@ -121,9 +121,11 @@ int FirstStageMain(int argc, char** argv) {
     CHECKCALL(mkdir("/dev/pts", 0755));
     CHECKCALL(mkdir("/dev/socket", 0755));
     // u-blox modifications
-    // Added for using u-blox MUX    
+    // Added for using u-blox MUX
     CHECKCALL(mount("devpts", "/dev/pts", "devpts", 0, "mode=0660"));
-    // u-blox modifications end    
+    //CHECKCALL(mount("devpts", "/dev/pts", "devpts", 0, NULL));
+    // u-blox modifications end
+
 #define MAKE_STR(x) __STRING(x)
     CHECKCALL(mount("proc", "/proc", "proc", 0, "hidepid=2,gid=" MAKE_STR(AID_READPROC)));
 #undef MAKE_STR

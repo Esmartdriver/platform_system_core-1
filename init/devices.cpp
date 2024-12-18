@@ -651,8 +651,31 @@ bool DeviceHandler::GetDeviceAlias(const std::string &upath, int major, int mino
     vendorId = std::stoi(vendorId_s, 0, 16);
     productId = std::stoi(productId_s, 0, 16);
 
-    if (!bInterfaceNumber_s.empty())
+    if (!bInterfaceNumber_s.empty()) {
         interfaceNumber = std::stoi(bInterfaceNumber_s, 0, 16);
+    } else {
+        // The path might be invalid, so we try to find the interface number in a parent directory.
+        // If we can't associate an interface number for the device, then we
+        // silently quit this as we won't ever by able to create an
+        // alias..
+        while ((sys_path != "/sys/devices" && sys_path != ".")) {
+            std::size_t last_slash_pos = sys_path.rfind('/');
+            std::string last_dir = sys_path.substr(last_slash_pos + 1);
+
+            bInterfaceNumber_path = sys_path + "/" + last_dir + ":1." + std::to_string(minor) + "/bInterfaceNumber";
+            if (!android::base::ReadFileToString(bInterfaceNumber_path, &bInterfaceNumber_s)) {
+                // Can't find the bInterfaceNumber? move up the path.
+                auto last_slash = sys_path.rfind('/');
+                if (last_slash == std::string::npos) break;
+
+                sys_path.erase(last_slash);
+            } else {
+                // shift the bInterfaceNumber to the left by 1 bit to multiply by 2 and correspond with ACM interface number
+                interfaceNumber = std::stoi(bInterfaceNumber_s, 0, 16) << 1;
+                // Found the bInterfaceNumber, move to the next step.
+                break; }
+        }
+    }
 
     // Iterate through all the configured aliases.
     for (const auto& alias : aliases_) {
